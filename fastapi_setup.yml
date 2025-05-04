@@ -1,0 +1,126 @@
+---
+# FastAPI Server Setup Playbook
+- name: Set up FastAPI server
+  hosts: all
+  become: yes
+  vars:
+    app_user: "{{ ansible_user }}"
+    app_dir: "/home/{{ app_user }}/fastapi_app"
+    python_version: "3.13.3"
+    venv_path: "/home/{{ app_user }}/.pyenv/versions/{{ python_version }}/envs/fastapi_env"
+
+  tasks:
+    - name: Update and upgrade apt packages
+      apt:
+        upgrade: yes
+        update_cache: yes
+        cache_valid_time: 86400
+
+    - name: Install dependencies for pyenv
+      apt:
+        name:
+          - build-essential
+          - libssl-dev
+          - zlib1g-dev
+          - libbz2-dev
+          - libreadline-dev
+          - libsqlite3-dev
+          - curl
+          - llvm
+          - libncurses5-dev
+          - libncursesw5-dev
+          - xz-utils
+          - tk-dev
+          - libffi-dev
+          - liblzma-dev
+          - git
+        state: present
+
+    - name: Check if pyenv is installed
+      stat:
+        path: "/home/{{ app_user }}/.pyenv"
+      register: pyenv_installed
+      become: no
+
+    - name: Install pyenv
+      shell: curl https://pyenv.run | bash
+      args:
+        creates: "/home/{{ app_user }}/.pyenv"
+      become: no
+      when: not pyenv_installed.stat.exists
+
+    - name: Add pyenv to .bashrc
+      blockinfile:
+        path: "/home/{{ app_user }}/.bashrc"
+        block: |
+          export PYENV_ROOT="$HOME/.pyenv"
+          command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+          eval "$(pyenv init -)"
+        marker: "# {mark} PYENV CONFIGURATION"
+        create: yes
+      become: no
+      when: not pyenv_installed.stat.exists
+
+    - name: Check if Python {{ python_version }} is installed
+      shell: "/home/{{ app_user }}/.pyenv/bin/pyenv versions | grep {{ python_version }}"
+      register: python_check
+      ignore_errors: yes
+      changed_when: false
+      become: no
+
+    - name: Install Python {{ python_version }}
+      shell: "/home/{{ app_user }}/.pyenv/bin/pyenv install {{ python_version }}"
+      args:
+        creates: "/home/{{ app_user }}/.pyenv/versions/{{ python_version }}"
+      become: no
+      when: python_check.rc != 0
+
+    - name: Set Python {{ python_version }} as global
+      shell: "/home/{{ app_user }}/.pyenv/bin/pyenv global {{ python_version }}"
+      become: no
+
+    - name: Create virtual environment
+      shell: "/home/{{ app_user }}/.pyenv/versions/{{ python_version }}/bin/python -m venv {{ venv_path }}"
+      args:
+        creates: "{{ venv_path }}"
+      become: no
+
+    - name: Install FastAPI and Uvicorn
+      pip:
+        name:
+          - fastapi
+          - uvicorn[standard]
+        state: present
+        executable: "{{ venv_path }}/bin/pip"
+      become: no
+
+    - name: Create app directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Copy FastAPI application
+      copy:
+        src: "files/main.py"  # You'll need to create this file with your FastAPI app
+        dest: "{{ app_dir }}/main.py"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+
+    - name: Create systemd service file
+      template:
+        src: "templates/fastapi.service.j2"  # You'll need to create this template
+        dest: "/etc/systemd/system/fastapi.service"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable and start FastAPI service
+      systemd:
+        name: fastapi.service
+        state: started
+        enabled: yes
+        daemon_reload: yes
